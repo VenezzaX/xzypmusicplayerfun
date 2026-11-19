@@ -121,6 +121,7 @@ local UI: any = {
     VolHit = nil,
     VolPct = nil,
     VolTrack = nil,
+    WorldLyricsBillboard = nil,
     setMainPlayColors = nil,
     setMainPlayVisual = nil,
     setMiniPlayColors = nil,
@@ -170,6 +171,10 @@ local RT = {
     lyricLineProgress = 0,
     lyricNextPreviewText = "",
     lyricLineCounter = 0,
+    worldLyricsBillboard = nil,
+    worldLyricsPart = nil,
+    worldLyricsCurrentPos = nil,
+    trailNodes = {},
 }
 
 local httpRequest = nil
@@ -274,6 +279,7 @@ local State = {
     scale = 1,
     volume = 1.14,
     apiKey = "",
+    lyricFindKey = "",
     sttKey = "",
     lastSong = "",
     hideKey = "",
@@ -401,6 +407,11 @@ if type(State.apiKey) == "string" then
     savedApiKey = State.apiKey
 end
 
+local savedLyricFindKey = ""
+if type(State.lyricFindKey) == "string" then
+    savedLyricFindKey = State.lyricFindKey
+end
+
 local savedSttKey = ""
 if type(State.sttKey) == "string" then
     savedSttKey = State.sttKey
@@ -421,6 +432,7 @@ local Opts = {
     scale = math.clamp(tonumber(State.scale) or 1, 0.75, 1.35),
     volume = math.clamp(tonumber(State.volume) or 1.14, 0, 2),
     apiKey = savedApiKey,
+    lyricFindKey = savedLyricFindKey,
     sttKey = savedSttKey,
 }
 
@@ -480,6 +492,25 @@ local function cleanup()
         pcall(function()
             c:Disconnect()
         end)
+    end
+    if RT.worldLyricsBillboard then
+        pcall(function()
+            RT.worldLyricsBillboard:Destroy()
+        end)
+        RT.worldLyricsBillboard = nil
+    end
+    if RT.worldLyricsPart then
+        pcall(function()
+            RT.worldLyricsPart:Destroy()
+        end)
+        RT.worldLyricsPart = nil
+    end
+    if RT.trailNodes then
+        for _, node in ipairs(RT.trailNodes) do
+            pcall(function() node.part:Destroy() end)
+            pcall(function() node.billboard:Destroy() end)
+        end
+        RT.trailNodes = {}
     end
     for i = #RT.collection, 1, -1 do
         pcall(function()
@@ -1662,18 +1693,99 @@ function Lyrics.clearGlyphs(immediate)
             peelOrder = math.abs(i - (total + 1) * 0.5)
         end
 
-        g.vx = radialFactor * math.random(85, 140) + (math.random() - 0.5) * 48
-        g.vy = -math.random(40, 100) - math.abs(radialFactor) * 18
-        g.gravity = math.random(220, 320)
-        g.vRot = spinDir * math.random(105, 225)
-        g.breakDelay = math.min(0.11, peelOrder * 0.008)
-        g.exitAge = 0
-        g.exitLife = 0.42 + math.random() * 0.12
-        g.startAlpha = g.alpha or 0
-        g.startScale = g.scale or 1
-        g.endScale = 0.42 + math.random() * 0.18
+        local isWasor = (g.styleKey == "wasor" or Opts.lyricStyle == "wasor" or Opts.lyricFont == "wasor")
+        local isMiside = (g.styleKey == "miside" or Opts.lyricStyle == "miside" or Opts.lyricFont == "miside")
+        if isWasor then
+            g.isWasor = true
+            g.vx = (math.random() - 0.5) * 170 + (radialFactor * 65)
+            g.vy = (math.random() - 0.5) * 150 - math.random(15, 45)
+            g.gravity = math.random(30, 70)
+            g.vRot = (math.random() - 0.5) * 130
+            g.breakDelay = (g.charFrac or 0) * 0.04
+            g.exitAge = 0
+            g.exitLife = 0.82 + math.random() * 0.24
+            g.startAlpha = g.alpha or 0
+            g.startScale = g.scale or 1
+            g.endScale = 0.90
+        elseif isMiside then
+            g.isMiside = true
+            g.glitchChars = { "?", "#", "!", "0", "1", "X", "§", "%", "Ø", "█", "░", "▒", "†", "‡" }
+            g.glitchStep = 0
+            g.vx = radialFactor * math.random(160, 300) + (math.random() - 0.5) * 170
+            g.vy = (math.random() - 0.5) * 280 - math.random(50, 140)
+            g.gravity = math.random(180, 380)
+            g.vRot = spinDir * math.random(320, 720)
+            g.breakDelay = math.random() * 0.08
+            g.exitAge = 0
+            g.exitLife = 0.58 + math.random() * 0.22
+            g.startAlpha = g.alpha or 0
+            g.startScale = g.scale or 1
+            g.endScale = 0.2
+        else
+            g.vx = radialFactor * math.random(85, 140) + (math.random() - 0.5) * 48
+            g.vy = -math.random(40, 100) - math.abs(radialFactor) * 18
+            g.gravity = math.random(220, 320)
+            g.vRot = spinDir * math.random(105, 225)
+            g.breakDelay = math.min(0.11, peelOrder * 0.008)
+            g.exitAge = 0
+            g.exitLife = 0.42 + math.random() * 0.12
+            g.startAlpha = g.alpha or 0
+            g.startScale = g.scale or 1
+            g.endScale = 0.42 + math.random() * 0.18
+        end
+
         RT.exitingGlyphs[#RT.exitingGlyphs + 1] = g
     end
+end
+
+function Lyrics.reset()
+    Lyrics.clearGlyphs(true)
+    Lyrics.updateNextPreviewVisual("", false)
+    Lyrics.updateCinemaBackdrop(false, 0, 0)
+
+    if UI.LyricsAnchor then
+        for _, child in ipairs(UI.LyricsAnchor:GetChildren()) do
+            if child.Name == "Glyph" or (child:IsA("TextLabel") and child ~= UI.LyricsNextPreview) then
+                pcall(function()
+                    child:Destroy()
+                end)
+            end
+        end
+    end
+
+    if UI.SubtleLyricNotice then
+        UI.SubtleLyricNotice.Visible = false
+        UI.SubtleLyricNotice.Text = ""
+    end
+
+    RT.lyricCues = {}
+    RT.lyricTrack = nil
+    RT.lyricStateKey = ""
+    RT.lyricIsPauseCue = false
+    RT.lyricStatus = "IDLE"
+    RT.lyricMatchLabel = "Loading..."
+    RT.lyricSourceName = ""
+    RT.lastSyncPos = 0
+    RT.silenceTimer = 0
+    RT.lyricLineProgress = 0
+    RT.lyricNextPreviewText = ""
+    RT.subtleNoticeExpire = 0
+    RT.worldLyricsCurrentPos = nil
+
+    if RT.trailNodes then
+        for _, node in ipairs(RT.trailNodes) do
+            pcall(function() node.part:Destroy() end)
+            pcall(function() node.billboard:Destroy() end)
+        end
+        RT.trailNodes = {}
+    end
+
+    if RT.lyricStatusRowBtn and RT.lyricStatusRowBtn.Parent then
+        RT.lyricStatusRowBtn.Text = "Loading..."
+        RT.lyricStatusRowBtn.TextColor3 = CLR.TEXT_MUTED
+    end
+
+    Lyrics.syncButtonVisual()
 end
 
 -- ============================================================================
@@ -1682,6 +1794,8 @@ end
 
 Lyrics.FONT_ORDER = {
     "modern",
+    "wasor",
+    "miside",
     "auto",
     "anime",
     "marker",
@@ -1693,8 +1807,10 @@ Lyrics.FONT_ORDER = {
 }
 
 Lyrics.FONT_PRESETS = {
-    auto = { label = "Auto Mix", font = Enum.Font.BuilderSansBold, scale = 1.0 },
     modern = { label = "Modern Bold", font = Enum.Font.BuilderSansBold, scale = 1.0 },
+    wasor = { label = "WASOR Rounded", font = Enum.Font.FredokaOne, scale = 1.04 },
+    miside = { label = "MiSide Horror", font = Enum.Font.SpecialElite, scale = 1.05 },
+    auto = { label = "Auto Mix", font = Enum.Font.BuilderSansBold, scale = 1.0 },
     anime = { label = "Anime Pop", font = Enum.Font.FredokaOne, scale = 1.04 },
     marker = { label = "Street Marker", font = Enum.Font.PermanentMarker, scale = 1.06 },
     serif = { label = "Poetic Serif", font = Enum.Font.Merriweather, scale = 0.94 },
@@ -1756,6 +1872,9 @@ end
 
 Lyrics.STYLE_ORDER = {
     "kinetic",
+    "wasor",
+    "miside",
+    "miside_trail",
     "auto",
     "karaoke",
     "preview",
@@ -1767,6 +1886,9 @@ Lyrics.STYLE_ORDER = {
 
 Lyrics.STYLE_PRESETS = {
     kinetic = { label = "Kinetic Shatter" },
+    wasor = { label = "WASOR (3D Float)" },
+    miside = { label = "MiSide (Follow 3D)" },
+    miside_trail = { label = "MiSide (Map Trail)" },
     auto = { label = "Auto Vibe" },
     karaoke = { label = "Karaoke Sweep" },
     preview = { label = "Dual-Line (Next)" },
@@ -1782,10 +1904,26 @@ RT.lyricNextPreviewText = ""
 
 function Lyrics.resolveLineStyle(text, isPauseCue)
     if isPauseCue then
+        if Opts.lyricStyle == "miside_trail" then
+            return "miside_trail"
+        elseif Opts.lyricStyle == "wasor" or Opts.lyricFont == "wasor" then
+            return "wasor"
+        elseif Opts.lyricStyle == "miside" or Opts.lyricFont == "miside" then
+            return "miside"
+        end
         return "kinetic"
     end
 
     local selected = Opts.lyricStyle or "kinetic"
+    if selected == "miside_trail" then
+        return "miside_trail"
+    end
+    if selected == "wasor" or Opts.lyricFont == "wasor" then
+        return "wasor"
+    end
+    if selected == "miside" or Opts.lyricFont == "miside" then
+        return "miside"
+    end
     if selected ~= "auto" then
         return selected
     end
@@ -1902,6 +2040,461 @@ function Lyrics.updateCinemaBackdrop(showBackdrop, lineCount, maxLineWidth)
     end
 end
 
+-- ============================================================================
+-- MISIDE DIEGETIC 3D WORLD-SPACE SUBTITLE & PLAYER TRACKER
+-- ============================================================================
+
+function Lyrics.ensureWorldBillboard()
+    if RT.worldLyricsBillboard and RT.worldLyricsBillboard.Parent and RT.worldLyricsPart and RT.worldLyricsPart.Parent then
+        return RT.worldLyricsBillboard, RT.worldLyricsPart
+    end
+
+    local cam = workspace.CurrentCamera
+    if not cam then
+        return nil, nil
+    end
+
+    local part = RT.worldLyricsPart
+    if not part or not part.Parent or part.Parent ~= cam then
+        if part then
+            pcall(function() part:Destroy() end)
+        end
+        part = Instance.new("Part")
+        part.Name = "xzypWorldLyricsAnchor"
+        part.Size = Vector3.new(0.1, 0.1, 0.1)
+        part.Transparency = 1
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+        part.Anchored = true
+        part.CastShadow = false
+        part.Parent = cam
+        RT.worldLyricsPart = part
+        RT.collection[#RT.collection + 1] = part
+    end
+
+    local bb = RT.worldLyricsBillboard
+    if not bb or not bb.Parent then
+        if bb then
+            pcall(function() bb:Destroy() end)
+        end
+        local Player = SRV.Players.LocalPlayer
+        local guiParent = Player:WaitForChild("PlayerGui")
+        if type(gethui) == "function" then
+            local okH, hui = pcall(gethui)
+            if okH and hui then
+                guiParent = hui
+            end
+        end
+
+        bb = Instance.new("BillboardGui")
+        bb.Name = "xzypWorldLyricsBillboard"
+        bb.Adornee = part
+        bb.Size = UDim2.fromOffset(CFG.LYRICS_MAX_W + 120, 320)
+        bb.AlwaysOnTop = true
+        bb.LightInfluence = 0
+        bb.ResetOnSpawn = false
+        bb.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        bb.Active = false
+        bb.ClipsDescendants = false
+        bb.Parent = guiParent
+        RT.worldLyricsBillboard = bb
+        UI.WorldLyricsBillboard = bb
+        RT.collection[#RT.collection + 1] = bb
+    end
+
+    return bb, part
+end
+
+function Lyrics.createTrailNode(lines, lineWidths, totalGlyphs, fontEnum, fontSize, isPauseCue)
+    local Player = SRV.Players.LocalPlayer
+    local char = Player.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso"))
+    local cam = workspace.CurrentCamera
+    if not cam then
+        return nil
+    end
+
+    local spawnPos = nil
+    if root then
+        local camDist = (cam.CFrame.Position - root.Position).Magnitude
+        if camDist < 2.0 then
+            spawnPos = cam.CFrame.Position + (cam.CFrame.LookVector * 4.2) + Vector3.new(0, -0.2, 0)
+        else
+            local head = (char:FindFirstChild("Head") and char.Head.Position) or (root.Position + Vector3.new(0, 2.5, 0))
+            local forwardDir = root.CFrame.LookVector
+            spawnPos = head + Vector3.new(0, 2.2, 0) + (forwardDir * 1.4)
+        end
+    else
+        spawnPos = cam.CFrame.Position + (cam.CFrame.LookVector * 5.0)
+    end
+
+    local part = Instance.new("Part")
+    part.Name = "xzypTrailAnchor"
+    part.Size = Vector3.new(0.1, 0.1, 0.1)
+    part.Transparency = 1
+    part.CanCollide = false
+    part.CanTouch = false
+    part.CanQuery = false
+    part.Anchored = true
+    part.CastShadow = false
+    part.CFrame = CFrame.new(spawnPos)
+    part.Parent = cam
+
+    local guiParent = Player:WaitForChild("PlayerGui")
+    if type(gethui) == "function" then
+        local okH, hui = pcall(gethui)
+        if okH and hui then
+            guiParent = hui
+        end
+    end
+
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "xzypTrailBillboard"
+    bb.Adornee = part
+    bb.Size = UDim2.fromOffset(CFG.LYRICS_MAX_W + 120, 320)
+    bb.AlwaysOnTop = true
+    bb.LightInfluence = 0
+    bb.ResetOnSpawn = false
+    bb.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    bb.Active = false
+    bb.ClipsDescendants = false
+    bb.Enabled = Opts.lyrics and (UI.Gui == nil or UI.Gui.Enabled)
+    bb.Parent = guiParent
+
+    local anchor = Instance.new("Frame")
+    anchor.Name = "TrailAnchor"
+    anchor.AnchorPoint = Vector2.new(0.5, 0.5)
+    anchor.Position = UDim2.fromScale(0.5, 0.5)
+    anchor.Size = UDim2.fromOffset(0, 0)
+    anchor.BackgroundTransparency = 1
+    anchor.Parent = bb
+
+    local node = {
+        part = part,
+        billboard = bb,
+        anchor = anchor,
+        spawnPos = spawnPos,
+        activeGlyphs = {},
+        exitingGlyphs = {},
+        state = "ACTIVE",
+        age = 0,
+        spawnClock = os.clock(),
+    }
+
+    local totalH = #lines * CFG.LYRICS_LINE_H
+    local startY = -totalH * 0.5 + CFG.LYRICS_LINE_H * 0.5
+    local globalIdx = 0
+
+    for lineIdx, lineStr in ipairs(lines) do
+        local lineW = lineWidths[lineIdx]
+        local cursorX = -lineW * 0.5
+        local targetY = startY + (lineIdx - 1) * CFG.LYRICS_LINE_H
+
+        for _, codepoint in utf8.codes(lineStr) do
+            local ch = utf8.char(codepoint)
+            local chW = SRV.TXT:GetTextSize(ch, fontSize, fontEnum, Vector2.new(400, 100)).X
+            local targetX = cursorX + chW * 0.5
+            cursorX += chW
+
+            if ch ~= " " then
+                globalIdx += 1
+                local charFrac = (globalIdx - 1) / math.max(1, totalGlyphs)
+
+                local startX = targetX + (math.random() - 0.5) * 14
+                local startYPos = targetY + (math.random() - 0.5) * 10
+                local initRot = (math.random() - 0.5) * 14
+                local initScale = 0.82
+                local entryDelay = math.min(0.22, (globalIdx - 1) * 0.015)
+
+                local lbl = Instance.new("TextLabel")
+                lbl.Name = "Glyph"
+                lbl.AnchorPoint = Vector2.new(0.5, 0.5)
+                lbl.Position = UDim2.fromOffset(startX, startYPos)
+                lbl.Size = UDim2.fromOffset(math.ceil(chW) + 14, CFG.LYRICS_LINE_H + 10)
+                lbl.Rotation = initRot
+                lbl.BackgroundTransparency = 1
+                lbl.Text = ch
+                lbl.TextColor3 = Color3.fromRGB(245, 248, 255)
+                lbl.TextTransparency = 1
+                lbl.Font = fontEnum
+                lbl.TextSize = fontSize
+                lbl.ZIndex = 2
+                lbl.Parent = anchor
+
+                local uiScale = Instance.new("UIScale")
+                uiScale.Scale = initScale
+                uiScale.Parent = lbl
+
+                local stroke = Instance.new("UIStroke")
+                stroke.Thickness = 2.4
+                stroke.Color = Color3.fromRGB(14, 10, 26)
+                stroke.Transparency = 1
+                stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+                stroke.Parent = lbl
+
+                node.activeGlyphs[#node.activeGlyphs + 1] = {
+                    label = lbl,
+                    uiScale = uiScale,
+                    stroke = stroke,
+                    glyphIdx = globalIdx,
+                    charFrac = charFrac,
+                    targetX = targetX,
+                    targetY = targetY,
+                    curX = startX,
+                    curY = startYPos,
+                    rot = initRot,
+                    scale = initScale,
+                    alpha = 1,
+                    delay = entryDelay,
+                    age = 0,
+                    phase = globalIdx * 0.65,
+                }
+            end
+        end
+    end
+
+    return node
+end
+
+function Lyrics.shatterTrailNode(node)
+    if not node or node.state == "SHATTERING" then
+        return
+    end
+    node.state = "SHATTERING"
+    local total = #node.activeGlyphs
+    for i = total, 1, -1 do
+        local g = node.activeGlyphs[i]
+        node.activeGlyphs[i] = nil
+
+        local radialFactor = math.clamp(g.targetX / 160, -1.6, 1.6)
+        local glyphNum = g.glyphIdx or i
+        local spinDir = (glyphNum % 2 ~= 0) and -1 or 1
+
+        g.glitchChars = { "?", "#", "!", "0", "1", "X", "§", "%", "Ø", "█", "░", "▒", "†", "‡" }
+        g.glitchStep = 0
+        g.vx = radialFactor * math.random(160, 300) + (math.random() - 0.5) * 170
+        g.vy = (math.random() - 0.5) * 280 - math.random(50, 140)
+        g.gravity = math.random(180, 380)
+        g.vRot = spinDir * math.random(320, 720)
+        g.breakDelay = math.random() * 0.08
+        g.exitAge = 0
+        g.exitLife = 0.65 + math.random() * 0.25
+        g.startAlpha = g.alpha or 0
+        g.startScale = g.scale or 1
+        g.endScale = 0.2
+
+        node.exitingGlyphs[#node.exitingGlyphs + 1] = g
+    end
+end
+
+function Lyrics.updateTrailNodes(dt, loudNorm)
+    if not RT.trailNodes or #RT.trailNodes == 0 then
+        return
+    end
+
+    local ln = tonumber(loudNorm) or 0
+    local t = os.clock()
+    local easeK = math.min(1, dt * 18)
+    local isTrailMode = (Opts.lyricStyle == "miside_trail")
+
+    for nodeIdx = #RT.trailNodes, 1, -1 do
+        local node = RT.trailNodes[nodeIdx]
+        node.age += dt
+
+        if not isTrailMode and node.state == "ACTIVE" then
+            Lyrics.shatterTrailNode(node)
+        end
+
+        node.billboard.Enabled = Opts.lyrics and (UI.Gui == nil or UI.Gui.Enabled)
+
+        if node.state == "ACTIVE" then
+            local baseCol = Color3.fromRGB(245, 248, 255)
+            if Opts.lyricPurple then
+                baseCol = Color3.fromRGB(220, 185, 255)
+            end
+
+            local hoverY = math.sin(t * 2.2 - node.spawnClock) * 0.10
+            local hoverX = math.cos(t * 1.6 - node.spawnClock) * 0.07
+            node.part.CFrame = CFrame.new(node.spawnPos + Vector3.new(hoverX, hoverY, 0))
+
+            for i = 1, #node.activeGlyphs do
+                local g = node.activeGlyphs[i]
+                g.age += dt
+                if g.age >= g.delay then
+                    g.curX += (g.targetX - g.curX) * easeK
+                    g.curY += (g.targetY - g.curY) * easeK
+                    g.rot += (0 - g.rot) * easeK
+
+                    local targetScale = 1.0 + (ln * 0.08)
+                    local targetAlpha = 0
+                    local extraY = math.sin(t * 3.4 - g.phase) * 1.6
+
+                    local isGlitch = (math.random() < 0.015)
+                    if isGlitch then
+                        extraY = (math.random() - 0.5) * 8
+                        targetScale = 1.0 + (math.random() - 0.5) * 0.28
+                        g.label.TextColor3 = (math.random() > 0.5) and Color3.fromRGB(255, 45, 65) or Color3.fromRGB(45, 245, 220)
+                    else
+                        g.label.TextColor3 = baseCol
+                    end
+
+                    g.scale += (targetScale - g.scale) * easeK
+                    g.alpha += (targetAlpha - g.alpha) * easeK
+
+                    g.label.Position = UDim2.fromOffset(g.curX, g.curY + extraY)
+                    g.label.Rotation = g.rot
+                    if g.uiScale then
+                        g.uiScale.Scale = g.scale
+                    end
+                    g.label.TextTransparency = g.alpha
+                    g.stroke.Transparency = math.min(1, g.alpha + 0.12)
+                end
+            end
+        end
+
+        if #node.exitingGlyphs > 0 then
+            for i = #node.exitingGlyphs, 1, -1 do
+                local g = node.exitingGlyphs[i]
+                g.exitAge += dt
+                local bDelay = g.breakDelay or 0
+                if g.exitAge >= bDelay then
+                    local activeExit = g.exitAge - bDelay
+                    local p = math.clamp(activeExit / g.exitLife, 0, 1)
+                    if p >= 1 then
+                        if g.label then
+                            g.label:Destroy()
+                        end
+                        table.remove(node.exitingGlyphs, i)
+                    else
+                        g.curX += g.vx * dt
+                        g.curY += g.vy * dt
+                        g.vy += (g.gravity or 240) * dt
+                        g.vx *= (1 - math.min(0.5, dt * 1.6))
+
+                        local curScale = g.startScale + (g.endScale - g.startScale) * p
+                        local a = g.startAlpha + (1 - g.startAlpha) * (p * p)
+                        g.label.Position = UDim2.fromOffset(g.curX, g.curY)
+                        g.label.Rotation += g.vRot * dt
+                        if g.uiScale then
+                            g.uiScale.Scale = curScale
+                        end
+
+                        g.glitchStep = (g.glitchStep or 0) + 1
+                        if g.glitchStep % 3 == 0 then
+                            local chars = g.glitchChars or { "?", "#", "!", "0", "1", "X", "█", "░" }
+                            g.label.Text = chars[math.random(1, #chars)]
+                            local colPick = math.random(1, 4)
+                            if colPick == 1 then
+                                g.label.TextColor3 = Color3.fromRGB(255, 45, 65)
+                            elseif colPick == 2 then
+                                g.label.TextColor3 = Color3.fromRGB(45, 240, 215)
+                            elseif colPick == 3 then
+                                g.label.TextColor3 = Color3.fromRGB(255, 230, 80)
+                            else
+                                g.label.TextColor3 = Color3.fromRGB(245, 245, 250)
+                            end
+                        end
+
+                        g.label.TextTransparency = a
+                        g.stroke.Transparency = math.min(1, a + 0.1)
+                    end
+                end
+            end
+        end
+
+        if node.state == "SHATTERING" and #node.exitingGlyphs == 0 then
+            pcall(function() node.part:Destroy() end)
+            pcall(function() node.billboard:Destroy() end)
+            table.remove(RT.trailNodes, nodeIdx)
+        end
+    end
+end
+
+function Lyrics.updateWorldAnchor(dt)
+    local isWasor = (Opts.lyricStyle == "wasor" or Opts.lyricFont == "wasor")
+    local isMiside = (Opts.lyricStyle == "miside" or (Opts.lyricFont == "miside" and Opts.lyricStyle ~= "miside_trail"))
+    local is3D = isWasor or isMiside
+    if not is3D then
+        if UI.LyricsAnchor and UI.LyricsAnchor.Parent ~= UI.LyricsLayer then
+            UI.LyricsAnchor.Parent = UI.LyricsLayer
+            UI.LyricsAnchor.Position = UDim2.fromScale(0.5, 0.25)
+            UI.LyricsAnchor.Rotation = -3.5
+        end
+        if RT.worldLyricsBillboard then
+            RT.worldLyricsBillboard.Enabled = false
+        end
+        return
+    end
+
+    local bb, part = Lyrics.ensureWorldBillboard()
+    if not bb or not part then
+        return
+    end
+
+    bb.Enabled = Opts.lyrics and (UI.Gui == nil or UI.Gui.Enabled)
+
+    if UI.LyricsAnchor and UI.LyricsAnchor.Parent ~= bb then
+        UI.LyricsAnchor.Parent = bb
+        UI.LyricsAnchor.Position = UDim2.fromScale(0.5, 0.5)
+        UI.LyricsAnchor.Rotation = 0
+    end
+
+    local Player = SRV.Players.LocalPlayer
+    local char = Player.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso"))
+    local cam = workspace.CurrentCamera
+    if not cam then
+        return
+    end
+
+    local targetPos = nil
+    if root then
+        local camDist = (cam.CFrame.Position - root.Position).Magnitude
+        if camDist < 2.0 then
+            -- First person view: floats comfortably in front of the camera in 3D world space
+            targetPos = cam.CFrame.Position + (cam.CFrame.LookVector * 4.4) + Vector3.new(0, -0.3, 0)
+        else
+            -- Third person view: floats over/in front of the character, smoothly following in world
+            local head = (char:FindFirstChild("Head") and char.Head.Position) or (root.Position + Vector3.new(0, 2.5, 0))
+            local forwardDir = root.CFrame.LookVector
+            local upOffset = isWasor and 2.6 or 2.4
+            local fwdOffset = isWasor and 0.5 or 0.7
+            targetPos = head + Vector3.new(0, upOffset, 0) + (forwardDir * fwdOffset)
+        end
+    else
+        targetPos = cam.CFrame.Position + (cam.CFrame.LookVector * 5.0)
+    end
+
+    if not RT.worldLyricsCurrentPos then
+        RT.worldLyricsCurrentPos = targetPos
+    else
+        local distDiff = (targetPos - RT.worldLyricsCurrentPos).Magnitude
+        if distDiff > 40 then
+            -- Instant snap on respawn or teleport
+            RT.worldLyricsCurrentPos = targetPos
+        else
+            local lagSpeed = math.min(1, dt * 10)
+            RT.worldLyricsCurrentPos = RT.worldLyricsCurrentPos:Lerp(targetPos, lagSpeed)
+        end
+    end
+
+    -- MiSide eerie floating oscillation & spatial micro-jitter
+    local t = os.clock()
+    local hoverY = math.sin(t * 2.4) * 0.14
+    local hoverX = math.cos(t * 1.8) * 0.10
+    local jitter = Vector3.zero
+    if math.random() < 0.04 then
+        jitter = Vector3.new((math.random() - 0.5) * 0.10, (math.random() - 0.5) * 0.10, (math.random() - 0.5) * 0.10)
+    end
+
+    if isWasor then
+        jitter = Vector3.zero
+    end
+    local finalPos = RT.worldLyricsCurrentPos + Vector3.new(hoverX, hoverY, 0) + jitter
+    part.CFrame = CFrame.new(finalPos)
+end
+
 function Lyrics.wrapLines(text, fontEnum, fontSize)
     local activeFont = fontEnum or Enum.Font.BuilderSansBold
     local activeSize = fontSize or CFG.LYRICS_FONT_SIZE
@@ -1951,7 +2544,18 @@ function Lyrics.spawnLine(text, isPauseCue, nextLineText)
     if type(Lyrics.resolveLineFont) == "function" then
         fontEnum, fontScale = Lyrics.resolveLineFont(text, isPauseCue)
     end
-    if styleKey == "typewriter" and not isPauseCue then
+    if (styleKey == "wasor" or Opts.lyricFont == "wasor") and not isPauseCue then
+        fontEnum = Enum.Font.FredokaOne
+        fontScale = 1.04
+    elseif (styleKey == "miside" or Opts.lyricFont == "miside") and not isPauseCue then
+        if Opts.lyricFont ~= "miside" and Opts.lyricFont ~= "auto" and Lyrics.FONT_PRESETS[Opts.lyricFont] then
+            fontEnum = Lyrics.FONT_PRESETS[Opts.lyricFont].font
+            fontScale = Lyrics.FONT_PRESETS[Opts.lyricFont].scale
+        else
+            fontEnum = Enum.Font.SpecialElite
+            fontScale = 1.05
+        end
+    elseif styleKey == "typewriter" and not isPauseCue then
         fontEnum = Enum.Font.RobotoMono
         fontScale = 0.94
     elseif styleKey == "subtitle" and not isPauseCue then
@@ -1995,6 +2599,28 @@ function Lyrics.spawnLine(text, isPauseCue, nextLineText)
     end
 
     -- Configure style-specific backdrop & next-line preview
+    if styleKey == "miside_trail" then
+        if RT.trailNodes then
+            for _, n in ipairs(RT.trailNodes) do
+                if n.state == "ACTIVE" then
+                    Lyrics.shatterTrailNode(n)
+                end
+            end
+        end
+
+        Lyrics.clearGlyphs(true)
+        Lyrics.updateNextPreviewVisual("", false)
+        Lyrics.updateCinemaBackdrop(false, 0, 0)
+
+        if not isPauseCue then
+            local node = Lyrics.createTrailNode(lines, lineWidths, totalGlyphs, fontEnum, fontSize, isPauseCue)
+            if node then
+                RT.trailNodes[#RT.trailNodes + 1] = node
+            end
+        end
+        return
+    end
+
     if styleKey == "subtitle" and not isPauseCue then
         Lyrics.updateCinemaBackdrop(true, #lines, maxLinePx)
     else
@@ -2048,6 +2674,18 @@ function Lyrics.spawnLine(text, isPauseCue, nextLineText)
                     initRot = 0
                     initScale = 0.96
                     entryDelay = 0
+                elseif styleKey == "wasor" then
+                    startX = targetX
+                    startYPos = targetY + 12
+                    initRot = (math.random() - 0.5) * 6
+                    initScale = 0.88
+                    entryDelay = math.min(0.20, (globalIdx - 1) * 0.012)
+                elseif styleKey == "miside" then
+                    startX = targetX + (math.random() - 0.5) * 14
+                    startYPos = targetY + (math.random() - 0.5) * 10
+                    initRot = (math.random() - 0.5) * 12
+                    initScale = 0.82
+                    entryDelay = math.min(0.22, (globalIdx - 1) * 0.015)
                 elseif styleKey == "karaoke" then
                     startX = targetX
                     startYPos = targetY + 10
@@ -2071,8 +2709,10 @@ function Lyrics.spawnLine(text, isPauseCue, nextLineText)
                 end
 
                 local initialColor = lyricCol
-                if styleKey == "karaoke" and not isPauseCue then
-                    initialColor = unsungCol
+                if (styleKey == "karaoke" or styleKey == "wasor") and not isPauseCue then
+                    initialColor = Color3.fromRGB(195, 175, 235)
+                elseif styleKey == "miside" and not isPauseCue then
+                    initialColor = Color3.fromRGB(245, 248, 255)
                 end
 
                 local lbl = Instance.new("TextLabel")
@@ -3112,8 +3752,130 @@ function Lyrics.fetchFromChartLyrics(ident)
     return nil
 end
 
+-- 6. LyricFind Official API (Typeahead search + lyric display / metadata)
+function Lyrics.fetchFromLyricFind(ident, audioDur)
+    if not httpRequest or #ident.title < 2 then
+        return nil
+    end
+
+    local searchUrl = "https://lyrics.lyricfind.com/api/v1/search?reqtype=default&territory=US&searchtype=track&track="
+        .. SRV.Http:UrlEncode(ident.title)
+        .. "&useragent=Mozilla%2F5.0&output=json"
+
+    if ident.artistReliable and #ident.artist >= 2 then
+        searchUrl = searchUrl .. "&artist=" .. SRV.Http:UrlEncode(ident.artist)
+    end
+
+    local headers = {
+        ["Accept"] = "application/json",
+        ["Referer"] = "https://lyrics.lyricfind.com/",
+    }
+
+    local key = (type(Opts.lyricFindKey) == "string" and Opts.lyricFindKey) or ""
+    if key == "" and type(Opts.apiKey) == "string" and #Opts.apiKey > 8 then
+        key = Opts.apiKey
+    end
+
+    if key ~= "" then
+        headers["Authorization"] = "Bearer " .. key
+        searchUrl = searchUrl .. "&displaykey=" .. SRV.Http:UrlEncode(key)
+    end
+
+    local res = safeGet(searchUrl, headers)
+    if not (res and res.Body) then
+        return nil
+    end
+
+    local ok, data = pcall(function()
+        return SRV.Http:JSONDecode(res.Body)
+    end)
+    if not (ok and data and type(data.tracks) == "table" and #data.tracks > 0) then
+        return nil
+    end
+
+    local targetTrack = nil
+    for _, t in ipairs(data.tracks) do
+        if type(t) == "table" and type(t.title) == "string" then
+            local tTitle = Lyrics.stripTitleNoise(t.title)
+            local tArtist = (type(t.artist) == "table" and tostring(t.artist.name or "")) or ""
+            local tSim = Lyrics.strictTokenCompare(ident.title, tTitle)
+            local aOk = true
+            if ident.artistReliable and #ident.artist >= 2 then
+                aOk = (Lyrics.strictTokenCompare(ident.artist, tArtist) >= 0.55)
+            elseif ident.titleWordCount < 2 then
+                aOk = false
+            end
+            if tSim >= 0.70 and aOk then
+                targetTrack = t
+                break
+            end
+        end
+    end
+
+    if not targetTrack then
+        targetTrack = data.tracks[1]
+    end
+
+    local rawLyrics = nil
+
+    -- Check if search track object itself contains full lyrics
+    if type(targetTrack.lyrics) == "string" and #targetTrack.lyrics > 25 then
+        rawLyrics = targetTrack.lyrics
+    end
+
+    -- Query /lyric endpoint using lfid
+    if not rawLyrics then
+        local lfid = targetTrack.lfid or targetTrack.id
+        if lfid then
+            local lyricUrl = "https://lyrics.lyricfind.com/api/v1/lyric?reqtype=default&territory=US&trackid="
+                .. SRV.Http:UrlEncode(tostring(lfid))
+                .. "&useragent=Mozilla%2F5.0&output=json"
+            if key ~= "" then
+                lyricUrl = lyricUrl .. "&displaykey=" .. SRV.Http:UrlEncode(key)
+            end
+            local lRes = safeGet(lyricUrl, headers)
+            if lRes and lRes.Body then
+                local lOk, lData = pcall(function()
+                    return SRV.Http:JSONDecode(lRes.Body)
+                end)
+                if lOk and lData and type(lData.track) == "table" then
+                    local tLyric = lData.track.lyrics
+                    if type(tLyric) == "string" and #tLyric > 25 then
+                        rawLyrics = tLyric
+                    end
+                end
+            end
+        end
+    end
+
+    if not rawLyrics then
+        return nil
+    end
+
+    local parsed, st = Lyrics.parseLrc(rawLyrics, audioDur)
+    if st == "OK" and #parsed >= 4 then
+        return {
+            cues = parsed,
+            rawLrc = rawLyrics,
+            badge = "LyricFind LRC",
+            tag = "lyricfind",
+            isSynced = true,
+        }
+    end
+
+    return {
+        plainText = rawLyrics,
+        badge = "LyricFind",
+        isSynced = false,
+    }
+end
+
 -- Unified Dispatcher for All Extra Synced & Plain Sources
 function Lyrics.fetchExtraSyncedSources(ident, audioDur)
+    local lf = Lyrics.fetchFromLyricFind(ident, audioDur)
+    if lf and lf.isSynced and lf.cues and #lf.cues >= 4 then
+        return lf
+    end
     local qq = Lyrics.fetchFromQQMusic(ident, audioDur)
     if qq then
         return qq
@@ -3126,6 +3888,10 @@ function Lyrics.fetchExtraSyncedSources(ident, audioDur)
 end
 
 function Lyrics.fetchExtraPlainSources(ident)
+    local lf = Lyrics.fetchFromLyricFind(ident, nil)
+    if lf and lf.plainText and #lf.plainText > 25 then
+        return lf.plainText, lf.badge or "LyricFind"
+    end
     local vagText, vagBadge = Lyrics.fetchFromVagalume(ident)
     if vagText then
         return vagText, vagBadge
@@ -3474,14 +4240,8 @@ end
 
 function Lyrics.loadForSong(songObj, forceRefresh)
     local syncHandle = { finished = false }
-    RT.lyricCues = {}
-    RT.lyricStateKey = ""
-    RT.lyricIsPauseCue = false
+    Lyrics.reset()
     RT.lyricTrack = songObj
-    RT.lyricSourceName = ""
-    RT.lastSyncPos = 0
-    RT.silenceTimer = 0
-    Lyrics.clearGlyphs(false)
 
     if not songObj then
         Lyrics.setStatus("IDLE", "Idle", nil, CLR.TEXT_MUTED, false)
@@ -4176,6 +4936,7 @@ local function playSong(s)
         return
     end
     log("PLAY_REQ", "Playing:", s.name, "| Creator:", s.creator, "| Path:", s.path)
+    Lyrics.reset()
     RT.cur = s
     RT.playing = true
     RT.startedAt = os.clock()
@@ -4387,9 +5148,7 @@ local function addPlaylistRow(sObj)
             Sound:Stop()
             RT.playing = false
             RT.cur = nil
-            RT.lyricCues = {}
-            RT.lyricStateKey = ""
-            Lyrics.clearGlyphs(false)
+            Lyrics.reset()
             Lyrics.setStatus("IDLE", "Idle", nil, CLR.TEXT_MUTED, false)
             setTrackTitleText("No track playing")
             UI.TrackSub.Text = "Track removed"
@@ -5662,9 +6421,15 @@ do
                     if pauseTxt then
                         Lyrics.spawnLine(pauseTxt, true, "")
                     else
-                        Lyrics.clearGlyphs(false)
+                        Lyrics.clearGlyphs(true)
                     end
                 end
+            end
+        else
+            if #RT.activeGlyphs > 0 or #RT.exitingGlyphs > 0 then
+                Lyrics.clearGlyphs(true)
+                Lyrics.updateNextPreviewVisual("", false)
+                Lyrics.updateCinemaBackdrop(false, 0, 0)
             end
         end
 
@@ -5672,19 +6437,29 @@ do
             if RT.activeLyricStyle == "subtitle" then
                 UI.LyricsAnchor.Rotation = 0
                 UI.LyricsAnchor.Position = UDim2.fromScale(0.5, 0.25)
+            elseif RT.activeLyricStyle == "wasor" or Opts.lyricStyle == "wasor" or Opts.lyricFont == "wasor" then
+                UI.LyricsAnchor.Rotation = -3.8 + math.sin(t * 1.5) * 1.2
+                UI.LyricsAnchor.Position = UDim2.fromScale(0.5, 0.5)
+            elseif RT.activeLyricStyle == "miside" or Opts.lyricFont == "miside" or Opts.lyricStyle == "miside" then
+                UI.LyricsAnchor.Rotation = math.sin(t * 1.8) * 1.6
+                UI.LyricsAnchor.Position = UDim2.fromScale(0.5, 0.5)
             else
                 UI.LyricsAnchor.Rotation = -3.5 + math.sin(t * 1.35) * 0.65
                 UI.LyricsAnchor.Position = UDim2.new(0.5, 0, 0.25, math.cos(t * 1.7) * 3)
             end
         end
 
-        local easeK = math.min(1, dt * 18)
-        local lyricCol = getLyricColor()
-        local unsungCol = Color3.fromRGB(165, 162, 185)
         local loudNorm = 0
         if RT.playing then
             loudNorm = math.clamp(rawLoud / 260, 0, 1)
         end
+
+        Lyrics.updateWorldAnchor(dt)
+        Lyrics.updateTrailNodes(dt, loudNorm)
+
+        local easeK = math.min(1, dt * 18)
+        local lyricCol = getLyricColor()
+        local unsungCol = Color3.fromRGB(165, 162, 185)
 
         for i = 1, #RT.activeGlyphs do
             local g = RT.activeGlyphs[i]
@@ -5727,6 +6502,22 @@ do
                         extraY = math.sin(t * 6.5 - g.phase) * waveAmp
                     end
                     targetScale = 1.0 + (loudNorm * 0.08)
+                elseif stKey == "wasor" and not g.isPause then
+                    local sung = (RT.lyricLineProgress >= g.charFrac)
+                    if sung then
+                        g.label.TextColor3 = Color3.fromRGB(142, 84, 255)
+                        targetScale = 1.05 + (loudNorm * 0.07)
+                        extraY = -2.2
+                        targetAlpha = 0
+                    else
+                        g.label.TextColor3 = Color3.fromRGB(195, 175, 235)
+                        targetScale = 0.98
+                        targetAlpha = 0.32
+                        extraY = 0
+                    end
+                    extraY += math.sin(t * 3.2 - g.phase) * 1.2
+                    g.stroke.Color = Color3.fromRGB(24, 14, 46)
+                    g.stroke.Thickness = 2.2
                 elseif stKey == "neon" and not g.isPause then
                     g.label.TextColor3 = lyricCol
                     targetScale = 1.0 + (loudNorm * 0.12)
@@ -5735,6 +6526,25 @@ do
                     if RT.playing then
                         extraY = math.sin(t * 4.5 - g.phase) * 1.4
                     end
+                elseif stKey == "miside" or Opts.lyricFont == "miside" or Opts.lyricStyle == "miside" then
+                    local baseCol = Color3.fromRGB(245, 248, 255)
+                    if Opts.lyricPurple then
+                        baseCol = Color3.fromRGB(220, 185, 255)
+                    end
+
+                    local isGlitch = (math.random() < 0.015)
+                    if isGlitch then
+                        extraY = (math.random() - 0.5) * 8
+                        targetScale = 1.0 + (math.random() - 0.5) * 0.28
+                        g.label.TextColor3 = (math.random() > 0.5) and Color3.fromRGB(255, 45, 65) or Color3.fromRGB(45, 245, 220)
+                    else
+                        extraY = math.sin(t * 3.4 - g.phase) * 1.6
+                        targetScale = 1.0 + (loudNorm * 0.08)
+                        g.label.TextColor3 = baseCol
+                    end
+
+                    g.stroke.Color = Color3.fromRGB(14, 10, 26)
+                    g.stroke.Thickness = 2.4
                 else
                     g.label.TextColor3 = lyricCol
                     local waveSpeed = 4.2
@@ -5786,6 +6596,25 @@ do
                     if g.uiScale then
                         g.uiScale.Scale = curScale
                     end
+
+                    if g.isMiside then
+                        g.glitchStep = (g.glitchStep or 0) + 1
+                        if g.glitchStep % 3 == 0 then
+                            local chars = g.glitchChars or { "?", "#", "!", "0", "1", "X", "█", "░" }
+                            g.label.Text = chars[math.random(1, #chars)]
+                            local colPick = math.random(1, 4)
+                            if colPick == 1 then
+                                g.label.TextColor3 = Color3.fromRGB(255, 45, 65)
+                            elseif colPick == 2 then
+                                g.label.TextColor3 = Color3.fromRGB(45, 240, 215)
+                            elseif colPick == 3 then
+                                g.label.TextColor3 = Color3.fromRGB(255, 230, 80)
+                            else
+                                g.label.TextColor3 = Color3.fromRGB(245, 245, 250)
+                            end
+                        end
+                    end
+
                     g.label.TextTransparency = a
                     g.stroke.Transparency = math.min(1, a + 0.1)
                 end
@@ -6859,6 +7688,45 @@ do
     connect(sttBox.FocusLost, function()
         Opts.sttKey = sttBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
         State.sttKey = Opts.sttKey
+        saveState()
+    end)
+
+    local lfRow = make("Frame", UI.SettingsScroll, {
+        Size = UDim2.new(1, -4, 0, 26),
+        BackgroundColor3 = CLR.BG_SURFACE,
+        BorderSizePixel = 0,
+    })
+    make("UICorner", lfRow, { CornerRadius = UDim.new(0, 6) })
+
+    make("TextLabel", lfRow, {
+        Position = UDim2.fromOffset(10, 0),
+        Size = UDim2.fromOffset(92, 26),
+        BackgroundTransparency = 1,
+        Text = "LyricFind Key",
+        TextColor3 = CLR.TEXT_PRIMARY,
+        Font = Enum.Font.BuilderSans,
+        TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    })
+
+    local lfBox = make("TextBox", lfRow, {
+        Position = UDim2.new(1, -226, 0.5, -9),
+        Size = UDim2.fromOffset(218, 18),
+        BackgroundColor3 = CLR.BG_WINDOW,
+        BorderSizePixel = 0,
+        Text = Opts.lyricFindKey,
+        PlaceholderText = "displaykey / token (optional)",
+        PlaceholderColor3 = CLR.TEXT_MUTED,
+        TextColor3 = CLR.TEXT_PRIMARY,
+        Font = Enum.Font.BuilderSans,
+        TextSize = 10,
+        ClearTextOnFocus = false,
+        ClipsDescendants = true,
+    })
+    make("UICorner", lfBox, { CornerRadius = UDim.new(0, 4) })
+    connect(lfBox.FocusLost, function()
+        Opts.lyricFindKey = lfBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+        State.lyricFindKey = Opts.lyricFindKey
         saveState()
     end)
 
